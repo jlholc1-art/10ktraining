@@ -234,6 +234,31 @@
       color: #c4bfbb;
       margin-top: 24px;
     }
+
+    .sync-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.75rem;
+      color: #c4bfbb;
+      margin-top: 6px;
+    }
+
+    .sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #d4d0cc;
+      transition: background 0.3s;
+    }
+
+    .sync-dot.synced { background: var(--green); }
+    .sync-dot.syncing { background: var(--orange); animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
   </style>
 </head>
 <body>
@@ -245,26 +270,47 @@
 
 <div id="app"></div>
 
-<footer id="footer"></footer>
+<footer id="footer">
+  <div><span id="sync-dot" class="sync-dot"></span> <span id="sync-label">Connecting...</span></div>
+  <div style="margin-top:4px">Resets automatically each new week</div>
+</footer>
 
-<script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js";
+  import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-database.js";
+
+  // ── Firebase ───────────────────────────────────────────────────────────────
+  const firebaseConfig = {
+    apiKey: "AIzaSyDvYBICB3lLR-Uw2RSKt1Jl4HcCw9568_4",
+    authDomain: "ktracker-b20f6.firebaseapp.com",
+    databaseURL: "https://ktracker-b20f6-default-rtdb.firebaseio.com",
+    projectId: "ktracker-b20f6",
+    storageBucket: "ktracker-b20f6.firebasestorage.app",
+    messagingSenderId: "85517396375",
+    appId: "1:85517396375:web:b3b21afe845642c39a7cd2"
+  };
+
+  const firebaseApp = initializeApp(firebaseConfig);
+  const db = getDatabase(firebaseApp);
+  const trackerRef = ref(db, "tracker");
+
   // ── Plan data ──────────────────────────────────────────────────────────────
   const PLAN = [
-    { ot: 2, mid: "1.5 mi",  long: "2 mi",       note: null },
-    { ot: 2, mid: "2 mi",    long: "2.5 mi",      note: null },
-    { ot: 2, mid: "2 mi",    long: "3 mi",        note: null },
-    { ot: 1, mid: "1.5 mi",  long: "2.5 mi",      note: "rest week" },
-    { ot: 2, mid: "2.5 mi",  long: "3.5 mi",      note: null },
-    { ot: 2, mid: "2.5 mi",  long: "4 mi",        note: null },
-    { ot: 2, mid: "3 mi",    long: "4.5 mi",      note: null },
-    { ot: 1, mid: "2 mi",    long: "3.5 mi",      note: "rest week" },
-    { ot: 2, mid: "3 mi",    long: "5 mi",        note: null },
-    { ot: 2, mid: "3 mi",    long: "5.5 mi",      note: null },
-    { ot: 1, mid: "2 mi",    long: "3 mi",        note: "taper week" },
-    { ot: 1, mid: "2 mi easy", long: "Race Day 🎉", note: "race week" },
+    { ot: 2, mid: "1.5 mi",   long: "2 mi",        note: null },
+    { ot: 2, mid: "2 mi",     long: "2.5 mi",       note: null },
+    { ot: 2, mid: "2 mi",     long: "3 mi",         note: null },
+    { ot: 1, mid: "1.5 mi",   long: "2.5 mi",       note: "rest week" },
+    { ot: 2, mid: "2.5 mi",   long: "3.5 mi",       note: null },
+    { ot: 2, mid: "2.5 mi",   long: "4 mi",         note: null },
+    { ot: 2, mid: "3 mi",     long: "4.5 mi",       note: null },
+    { ot: 1, mid: "2 mi",     long: "3.5 mi",       note: "rest week" },
+    { ot: 2, mid: "3 mi",     long: "5 mi",         note: null },
+    { ot: 2, mid: "3 mi",     long: "5.5 mi",       note: null },
+    { ot: 1, mid: "2 mi",     long: "3 mi",         note: "taper week" },
+    { ot: 1, mid: "2 mi easy",long: "Race Day 🎉",   note: "race week" },
   ];
 
-  const PLAN_START = new Date(2026, 3, 20); // April 20, 2026 (month is 0-indexed)
+  const PLAN_START = new Date(2026, 3, 20); // April 20, 2026
   const RACE_DATE  = new Date(2026, 6, 11); // July 11, 2026
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -283,7 +329,7 @@
   function currentWeekIndex() {
     const today = startOfDay(new Date());
     const diff = Math.floor((today - PLAN_START) / (1000 * 60 * 60 * 24));
-    return Math.floor(diff / 7); // 0-based
+    return Math.floor(diff / 7);
   }
 
   function daysUntilRace() {
@@ -291,40 +337,23 @@
     return Math.ceil((RACE_DATE - today) / (1000 * 60 * 60 * 24));
   }
 
-  // ── localStorage (with in-memory fallback) ───────────────────────────────
-  const STORAGE_KEY = "10k_tracker_v1";
-  let _memStore = null; // fallback when localStorage is unavailable
-
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return (raw ? JSON.parse(raw) : null) || _memStore || {};
-    } catch {
-      return _memStore || {};
-    }
+  // ── Sync status ───────────────────────────────────────────────────────────
+  function setSyncStatus(status) {
+    const dot   = document.getElementById("sync-dot");
+    const label = document.getElementById("sync-label");
+    if (!dot || !label) return;
+    dot.className = `sync-dot ${status}`;
+    label.textContent = status === "synced" ? "Synced" : status === "syncing" ? "Syncing…" : "Connecting…";
   }
 
-  function saveState(state) {
-    _memStore = state;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
-  }
+  // ── Firebase read/write ───────────────────────────────────────────────────
+  let _checks = {};
 
-  function getWeekChecks(weekIdx) {
-    const state = loadState();
-    if (state.weekIdx !== weekIdx) {
-      saveState({ weekIdx, checks: {} });
-      return {};
-    }
-    return state.checks || {};
-  }
-
-  function setCheck(weekIdx, key, val) {
-    const state = loadState();
-    if (state.weekIdx !== weekIdx) state.checks = {};
-    state.weekIdx = weekIdx;
-    state.checks = state.checks || {};
-    state.checks[key] = val;
-    saveState(state);
+  function saveChecks(weekIdx, checks) {
+    setSyncStatus("syncing");
+    set(trackerRef, { weekIdx, checks })
+      .then(() => setSyncStatus("synced"))
+      .catch(() => setSyncStatus(""));
   }
 
   // ── Task builders ─────────────────────────────────────────────────────────
@@ -338,12 +367,7 @@
         detail: "Orangetheory session",
       });
     }
-    tasks.push({
-      key: "mid",
-      icon: "🏃",
-      label: `Mid-week Run`,
-      detail: week.mid,
-    });
+    tasks.push({ key: "mid",  icon: "🏃", label: "Mid-week Run", detail: week.mid });
     tasks.push({
       key: weekIdx === 11 ? "race" : "long",
       icon: weekIdx === 11 ? "🏅" : "🛣️",
@@ -354,50 +378,34 @@
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
-  function render() {
+  function render(checks) {
     const app = document.getElementById("app");
-    const footer = document.getElementById("footer");
-    const today = startOfDay(new Date());
     const weekIdx = currentWeekIndex();
     const raceDays = daysUntilRace();
 
-    // Outside training window
     if (weekIdx < 0) {
-      app.innerHTML = `
-        <div class="card outside-plan">
-          <div class="big">⏳</div>
-          <p>Training starts <strong>April 21, 2026</strong>. Check back then!</p>
-        </div>`;
-      footer.textContent = `${Math.abs(weekIdx * 7 + (today - PLAN_START) / (1000*60*60*24)) | 0} days until training begins`;
+      app.innerHTML = `<div class="card outside-plan"><div class="big">⏳</div><p>Training starts <strong>April 20, 2026</strong>. Check back then!</p></div>`;
       return;
     }
 
     if (weekIdx >= PLAN.length) {
-      app.innerHTML = `
-        <div class="card outside-plan">
-          <div class="big">🏅</div>
-          <p>Training complete! Hope the race was amazing.</p>
-        </div>`;
+      app.innerHTML = `<div class="card outside-plan"><div class="big">🏅</div><p>Training complete! Hope the race was amazing.</p></div>`;
       return;
     }
 
-    const week = PLAN[weekIdx];
-    const weekNum = weekIdx + 1;
+    const week     = PLAN[weekIdx];
+    const weekNum  = weekIdx + 1;
     const weekStart = addDays(PLAN_START, weekIdx * 7);
     const weekEnd   = addDays(weekStart, 6);
-
-    const tasks  = buildTasks(week, weekIdx);
-    const checks = getWeekChecks(weekIdx);
+    const tasks     = buildTasks(week, weekIdx);
     const doneCount = tasks.filter(t => checks[t.key]).length;
-    const pct = Math.round((doneCount / tasks.length) * 100);
+    const pct       = Math.round((doneCount / tasks.length) * 100);
+    const allDone   = doneCount === tasks.length;
 
-    const badgeClass = week.note === "rest week" ? "rest"
+    const badgeClass = week.note === "rest week"  ? "rest"
                      : week.note === "taper week" ? "taper"
-                     : week.note === "race week"  ? "race"
-                     : "";
+                     : week.note === "race week"  ? "race" : "";
     const badgeText  = week.note || `Week ${weekNum} of ${PLAN.length}`;
-
-    const allDone = doneCount === tasks.length;
 
     const tasksHTML = tasks.map(t => {
       const done = !!checks[t.key];
@@ -425,7 +433,6 @@
         </div>
         <div class="week-title">Week ${weekNum} Benchmarks</div>
         <div class="week-dates">${formatDate(weekStart)} – ${formatDate(weekEnd)}</div>
-
         <div class="progress-wrap">
           <div class="progress-label">
             <span>Progress</span>
@@ -435,30 +442,41 @@
             <div class="progress-fill${allDone ? " complete" : ""}" style="width:${pct}%"></div>
           </div>
         </div>
-
         <div class="tasks">${tasksHTML}</div>
         ${allDone ? `<div class="all-done">Week ${weekNum} complete! 🎉</div>` : ""}
       </div>
-
       <div class="card countdown-card">
         <div class="days">${raceDays}</div>
         <div class="days-label">days until Race Day · July 11, 2026</div>
       </div>`;
 
-    // Attach toggle listeners
     app.querySelectorAll(".task").forEach(el => {
       el.addEventListener("click", () => {
         const key = el.dataset.key;
-        const newVal = !checks[key];
-        setCheck(weekIdx, key, newVal);
-        render();
+        const updated = { ...checks, [key]: !checks[key] };
+        _checks = updated;
+        render(updated);
+        saveChecks(weekIdx, updated);
       });
     });
-
-    footer.textContent = `Resets automatically each new week`;
   }
 
-  render();
+  // ── Bootstrap: listen to Firebase ────────────────────────────────────────
+  onValue(trackerRef, (snapshot) => {
+    const weekIdx = currentWeekIndex();
+    const data = snapshot.val();
+
+    if (!data || data.weekIdx !== weekIdx) {
+      // New week or first run — reset
+      _checks = {};
+      saveChecks(weekIdx, {});
+    } else {
+      _checks = data.checks || {};
+      setSyncStatus("synced");
+    }
+
+    render(_checks);
+  });
 </script>
 </body>
 </html>
